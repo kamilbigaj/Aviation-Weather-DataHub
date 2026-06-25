@@ -1,0 +1,11 @@
+# Ukryte hasła i klucze
+.env
+
+# Środowiska wirtualne i cache Pythona
+venv/
+__pycache__/
+*.pyc
+
+# Pobierane surowe dane (nie chcemy ich pchać na GitHuba)
+*.json
+*.csv
