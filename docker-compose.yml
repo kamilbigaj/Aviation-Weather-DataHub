@@ -1,28 +1,66 @@
 version: '3.8'
 
+# SHARED AIRFLOW CONFIGURATION (Avoids duplicating the same configuration across multiple services) ---
+x-airflow-common:
+  &airflow-common
+  build: .
+  env_file:
+    - .env
+  environment:
+    - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:${POSTGRES_PASSWORD}@postgres_db:5432/postgres
+    - AIRFLOW__CORE__LOAD_EXAMPLES=False
+  depends_on:
+    postgres_db:
+      condition: service_healthy
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./main.py:/opt/airflow/main.py
+
 services:
-  # --- DATABASE SERVICE ---
+# DATABASE SERVICE (Stores both application data and Airflow metadata) ---
   postgres_db:
     image: postgres:15
     container_name: aviation_postgres
+    env_file:
+      - .env
     environment:
-      POSTGRES_USER: kamilbigaj
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: postgres
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kamilbigaj -d postgres"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
-      timeout: 5s
       retries: 5
 
-  # --- PYTHON ETL SCRIPT SERVICE ---
-  etl_app:
-    build: .
-    container_name: aviation_etl_script
-    depends_on:
-      postgres_db:
-        condition: service_healthy
-    env_file:
-      - .env
+# AIRFLOW: Initialization Service (Creates the Airflow database schema and initializes the admin user) ---
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow_init
+    command: version
+    environment:
+      <<: *airflow-common.environment
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+
+# AIRFLOW: Web Server (Provides the web-based user interface, available at localhost:8080) ---
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow_webserver
+    command: webserver
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      retries: 5
+
+# IRFLOW: Scheduler (Coordinates and schedules workflow execution) ---
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow_scheduler
+    command: scheduler
