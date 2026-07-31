@@ -1,15 +1,16 @@
 version: '3.8'
 
-# SHARED AIRFLOW CONFIGURATION (Avoids duplicating the same configuration across multiple services) ---
+# SHARED AIRFLOW CONFIGURATION
 x-airflow-common:
   &airflow-common
   build: .
   env_file:
     - .env
   environment:
-    - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-    - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:${POSTGRES_PASSWORD}@postgres_db:5432/postgres
-    - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD}@postgres_db:5432/postgres
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
   depends_on:
     postgres_db:
       condition: service_healthy
@@ -18,7 +19,7 @@ x-airflow-common:
     - ./main.py:/opt/airflow/main.py
 
 services:
-# DATABASE SERVICE (Stores both application data and Airflow metadata) ---
+  # DATABASE SERVICE
   postgres_db:
     image: postgres:15
     container_name: aviation_postgres
@@ -35,19 +36,19 @@ services:
       interval: 5s
       retries: 5
 
-# AIRFLOW: Initialization Service (Creates the Airflow database schema and initializes the admin user) ---
+  # AIRFLOW: Initialization Service
   airflow-init:
     <<: *airflow-common
     container_name: airflow_init
     command: version
     environment:
-      <<: *airflow-common.environment
+      <<: *airflow-common-env
       _AIRFLOW_DB_UPGRADE: 'true'
       _AIRFLOW_WWW_USER_CREATE: 'true'
       _AIRFLOW_WWW_USER_USERNAME: admin
       _AIRFLOW_WWW_USER_PASSWORD: admin
 
-# AIRFLOW: Web Server (Provides the web-based user interface, available at localhost:8080) ---
+  # AIRFLOW: Web Server
   airflow-webserver:
     <<: *airflow-common
     container_name: airflow_webserver
@@ -59,7 +60,7 @@ services:
       interval: 10s
       retries: 5
 
-# AIRFLOW: Scheduler (Coordinates and schedules workflow execution) ---
+  # AIRFLOW: Scheduler 
   airflow-scheduler:
     <<: *airflow-common
     container_name: airflow_scheduler
