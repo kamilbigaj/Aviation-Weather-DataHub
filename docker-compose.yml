@@ -59,7 +59,7 @@ services:
       interval: 10s
       retries: 5
 
-# IRFLOW: Scheduler (Coordinates and schedules workflow execution) ---
+# AIRFLOW: Scheduler (Coordinates and schedules workflow execution) ---
   airflow-scheduler:
     <<: *airflow-common
     container_name: airflow_scheduler
