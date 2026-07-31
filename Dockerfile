@@ -1,17 +1,8 @@
-# 1. Use the official lightweight Linux image with Python 3.10 pre-installed.
-FROM python:3.10-slim
+# We use the official Apache Airflow image with Python 3.10
+FROM apache/airflow:2.9.1-python3.10
 
-# 2. Set the working directory to /app inside the container.
-WORKDIR /app
-
-# 3. Copy the dependency list into the container.
+# Copy our dependencies file
 COPY requirements.txt .
 
-# 4. Install the required Python dependencies.
+# Install additional libraries (Pandas, Meteostat, etc.)
 RUN pip install --no-cache-dir -r requirements.txt
-
-# 5. Copy the remaining application files into the container.
-COPY . .
-
-# 6. Configure the container to execute the application automatically on startup.
-CMD ["python", "main.py"]
