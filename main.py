@@ -270,31 +270,19 @@ else:
         else:
             weather_df = pd.DataFrame()
 
-        # Stream flight records to database row-by-row to handle unique constraints
+        # BATCH PROCESSING: Upload flights in bulk (1000 rows at once)
         if not flights_df.empty:
-            print("Uploading flight data to database...")
-            flights_loaded = 0
-            for _, row in flights_df.iterrows():
-                try:
-                    pd.DataFrame([row]).to_sql(name='flights', con=engine, if_exists='append', index=False)
-                    flights_loaded += 1
-                except IntegrityError:
-                    continue
-            print(f"Success: {flights_loaded} new flights loaded (duplicates ignored).")
+            print(f"Uploading {len(flights_df)} flights to cloud database in bulk...")
+            flights_df.to_sql(name='flights', con=engine, if_exists='append', index=False, method='multi', chunksize=1000)
+            print("Success: Flights loaded.")
 
-        # Stream weather records to database row-by-row
+        # BATCH PROCESSING: Upload weather in bulk
         if not weather_df.empty:
-            print("Uploading weather data to database...")
-            weather_loaded = 0
-            for _, row in weather_df.iterrows():
-                try:
-                    pd.DataFrame([row]).to_sql(name='weather', con=engine, if_exists='append', index=False)
-                    weather_loaded += 1
-                except IntegrityError:
-                    continue
-            print(f"Success: {weather_loaded} new weather records loaded (duplicates ignored).")
+            print(f"Uploading {len(weather_df)} weather records to cloud database in bulk...")
+            weather_df.to_sql(name='weather', con=engine, if_exists='append', index=False, method='multi', chunksize=1000)
+            print("Success: Weather records loaded.")
 
-        print("\nETL PIPELINE EXECUTED SUCCESSFULLY WITH IDEMPOTENCY!")
+        print("\nETL PIPELINE EXECUTED SUCCESSFULLY!")
 
     except Exception as e:
         # Log infrastructure or transaction level errors for debugging
