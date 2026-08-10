@@ -9,3 +9,9 @@ __pycache__/
 # Pobierane surowe dane (nie chcemy ich pchać na GitHuba)
 *.json
 *.csv
+
+# Ustawienia edytora (JetBrains/PyCharm)
+.idea/
+
+# Logi systemowe
+logs/

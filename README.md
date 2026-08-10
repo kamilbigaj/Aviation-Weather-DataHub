@@ -93,7 +93,7 @@ The transformed datasets are loaded into PostgreSQL using an **idempotent loadin
 
 ---
 
-## 🌬️ Apache Airflow
+## Apache Airflow
 
 The ETL pipeline is orchestrated using **Apache Airflow**.
 
