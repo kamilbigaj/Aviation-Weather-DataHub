@@ -1,0 +1,12 @@
+aviation_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: aviation-db.cdo8mm6occ7f.eu-central-1.rds.amazonaws.com
+      user: postgres
+      password: "{{ env_var('DB_PASSWORD') }}"
+      port: 5432
+      dbname: postgres
+      schema: public
+      threads: 1

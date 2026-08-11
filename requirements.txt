@@ -39,7 +39,6 @@ pyzmq==27.1.0
 requests==2.32.5
 s3transfer==0.16.1
 six==1.17.0
-SQLAlchemy==2.0.51
 stack-data==0.6.3
 tornado==6.5.7
 traitlets==5.15.1
@@ -48,3 +47,5 @@ tzdata==2026.2
 urllib3==1.26.20
 wcwidth==0.8.1
 zipp==3.23.1
+dbt-postgres
+SQLAlchemy<2.0.0

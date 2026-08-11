@@ -20,14 +20,20 @@ with DAG(
     schedule_interval='@daily',
     start_date=datetime(2026, 7, 14),
     catchup=False,
-    tags=['aviation', 'weather', 'etl'],
+    tags=['aviation', 'weather', 'etl', 'dbt'],
 ) as dag:
 
-    # 3. TASK - A specific unit of work to be executed.
+    # 3. TASK 1 (ETL)
     run_etl_script = BashOperator(
         task_id='run_main_python_script',
         bash_command='python /opt/airflow/main.py',
     )
 
-    # 4. EXECUTION ORDER (PIPELINE) - Defines the order in which tasks are executed.
-    run_etl_script
+    # 4. TASK 2 (ELT)
+    run_dbt_transform = BashOperator(
+        task_id='run_dbt_models',
+        bash_command='cd /opt/airflow/aviation_analytics && dbt run --profiles-dir .',
+    )
+
+    # 5. EXECUTION ORDER (PIPELINE)
+    run_etl_script >> run_dbt_transform
