@@ -17,6 +17,7 @@ x-airflow-common:
   volumes:
     - ./dags:/opt/airflow/dags
     - ./main.py:/opt/airflow/main.py
+    - ./aviation_analytics:/opt/airflow/aviation_analytic  # <--- NASZE OKIENKO NA DBT
 
 services:
   # DATABASE SERVICE
@@ -31,6 +32,8 @@ services:
       POSTGRES_DB: postgres
     ports:
       - "5432:5432"
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -65,3 +68,6 @@ services:
     <<: *airflow-common
     container_name: airflow_scheduler
     command: scheduler
+
+volumes:
+  postgres-db-volume:

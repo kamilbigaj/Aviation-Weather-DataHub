@@ -1,10 +1,14 @@
 # ENVIRONMENT SETUP & CONFIGURATION
-
 import requests
 import pandas as pd
 import json
 import os
-from datetime import datetime
+import time
+import boto3
+from datetime import datetime, timedelta
+from meteostat import Point, Hourly
+from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 from dotenv import load_dotenv
 
 # Load environmental configurations from the local secure .env file
@@ -14,25 +18,45 @@ load_dotenv()
 AERO_API_KEY = os.getenv('AERO_API_KEY')
 AIRPORTS = ['EPWA', 'EGLL', 'EDDF']
 
-print("Libraries loaded. AeroDataBox API key secured and ready.")
+print("Libraries loaded. API credentials secured and ready.")
+
+# CORE FUNCTIONS
+def upload_raw_to_s3(data, file_prefix):
+    """Persists raw JSON payloads directly to AWS S3 (Data Lake pattern)."""
+    bucket_name = os.getenv("AWS_BUCKET_NAME")
+    
+    if not bucket_name:
+        print("⚠️ WARNING: AWS_BUCKET_NAME not found in .env. Skipping S3 upload.")
+        return
+
+    # Initialize AWS S3 client
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+        region_name=os.getenv('AWS_REGION')
+    )
+    
+    # Generate S3 partition path (YYYY-MM-DD) for optimized data lake querying
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    file_name = f"raw_data/{today_str}/{file_prefix}.json"
+    
+    try:
+        # Serialize Python dictionary to JSON string and upload to S3 Bucket
+        s3_client.put_object(
+            Bucket=bucket_name,
+            Key=file_name,
+            Body=json.dumps(data)
+        )
+        print(f"☁️ SUCCESS: Raw data persisted to S3 Data Lake -> s3://{bucket_name}/{file_name}")
+    except Exception as e:
+        print(f"❌ AWS S3 UPLOAD FAILED for {file_prefix}. Reason: {e}")
 
 
-# PHASE: EXTRACT (Flight Data Ingestion via AeroDataBox API)
+# PHASE: EXTRACT (Flight Data Ingestion)
+print("\nStarting AeroDataBox data extraction...\n")
 
-import requests
-import json
-import os
-import time
-from datetime import datetime
-from dotenv import load_dotenv
-
-load_dotenv()
-AERO_API_KEY = os.getenv('AERO_API_KEY')
-AIRPORTS = ['EPWA', 'EGLL', 'EDDF']
-
-print("Starting AeroDataBox data extraction...\n")
-
-# Establish landing zone directory for immutable raw data storage (Data Lake pattern)
+# Establish landing zone directory for immutable raw data storage locally
 RAW_DIR = "data/raw"
 os.makedirs(RAW_DIR, exist_ok=True)
 
@@ -49,6 +73,7 @@ headers = {
 for airport in AIRPORTS:
     # Build unique, date-stamped file path for daily caching optimization
     local_file = os.path.join(RAW_DIR, f"aero_{airport}_{today_str}.json")
+    file_prefix = f"aero_{airport}"
 
     if os.path.exists(local_file):
         print(f"Cache found: {local_file}. Skipping API call.")
@@ -63,9 +88,14 @@ for airport in AIRPORTS:
 
         if response.status_code == 200:
             json_data = response.json()
+            
+            # 1. Save locally (Caching)
             with open(local_file, 'w', encoding='utf-8') as file:
                 json.dump(json_data, file, ensure_ascii=False, indent=4)
-            print(f"Success! Data saved to {local_file}")
+            print(f"Success! Data saved locally to {local_file}")
+            
+            # 2. Save to AWS S3 (Data Lake)
+            upload_raw_to_s3(json_data, file_prefix)
 
             # RATE LIMIT PROTECTION: Sleep execution to respect BASIC tier 1 rps quota
             print("Sleeping for 2 seconds to respect API rate limits...")
@@ -76,19 +106,9 @@ for airport in AIRPORTS:
 print("\nExtract Phase (AeroDataBox) completed!")
 
 
-
-# PHASE: TRANSFORM (Flight Data Normalization & Feature Engineering)
-
-import pandas as pd
-import json
-import os
-from datetime import datetime
-
-print("Starting AeroDataBox data transformation in Pandas...\n")
+# PHASE: TRANSFORM (Flight Data Normalization)
+print("\nStarting AeroDataBox data transformation in Pandas...\n")
 dataframes_list = []
-AIRPORTS = ['EPWA', 'EGLL', 'EDDF']
-RAW_DIR = "data/raw"
-today_str = datetime.now().strftime('%Y-%m-%d')
 
 # Parse daily raw JSON files from the local Landing Zone
 for airport in AIRPORTS:
@@ -159,20 +179,14 @@ else:
     print("No dataframes were created.")
 
 
-
-    # PHASE: WEATHER EXTRACT (Meteostat Historical Meteorological Data)
-
-from datetime import datetime, timedelta
-from meteostat import Point, Hourly
-import pandas as pd
-
+# PHASE: WEATHER EXTRACT (Historical Data)
 print("\nStarting historical weather data extraction...\n")
 
 # Map geographical coordinates for precise weather spatial index queries
 airport_locations = {
     'EPWA': Point(52.1657, 20.9671, 110),  # Warsaw Chopin
-    'EGLL': Point(51.4700, -0.4543, 25),  # London Heathrow
-    'EDDF': Point(50.0333, 8.5705, 111)  # Frankfurt
+    'EGLL': Point(51.4700, -0.4543, 25),   # London Heathrow
+    'EDDF': Point(50.0333, 8.5705, 111)    # Frankfurt
 }
 
 # Define data extraction time bounds (24-hour lookback window)
@@ -201,7 +215,7 @@ if weather_frames:
     # Concatenate regional data arrays into a unified weather dataframe
     weather_df = pd.concat(weather_frames, ignore_index=True)
 
-    # Prune target features for target Data Warehouse warehouse schema
+    # Prune target features for target Data Warehouse schema
     columns_to_keep = ['airport_code', 'time', 'temp', 'prcp', 'wspd', 'coco']
     weather_df = weather_df[columns_to_keep]
 
@@ -231,56 +245,44 @@ else:
     print("Failed to create weather dataframe.")
 
 
+# PHASE: LOAD (Data Warehouse Ingestion)
+print("\nStarting Load Phase: Ingesting data into PostgreSQL...\n")
 
-    # PHASE: LOAD (Data Warehouse Ingestion with Duplicate Protection)
-
-import pandas as pd
-import os
-from sqlalchemy import create_engine
-from sqlalchemy.exc import IntegrityError
-from dotenv import load_dotenv
-
-print("Starting Load Phase: Ingesting data into PostgreSQL...\n")
-
-# 1. Acquire target database URL credentials securely
-load_dotenv()
+# Acquire target database URL credentials securely
 db_url = os.getenv('DATABASE_URL')
 
 if not db_url:
     print("ERROR: DATABASE_URL missing in .env file!")
 else:
     try:
-        # 2. Establish high-performance relational database engine mapping
+        # Establish high-performance relational database engine mapping
         engine = create_engine(db_url)
 
-        # 3. Read processed datasets from the Staging Layer
+        # Read processed datasets from the Staging Layer
         print("Reading cleaned CSV datasets...")
-        flights_df = pd.read_csv('clean_flights.csv')
-        weather_df = pd.read_csv('clean_weather.csv')
+        if os.path.exists('clean_flights.csv'):
+            flights_df = pd.read_csv('clean_flights.csv')
+        else:
+            flights_df = pd.DataFrame()
+            
+        if os.path.exists('clean_weather.csv'):
+            weather_df = pd.read_csv('clean_weather.csv')
+        else:
+            weather_df = pd.DataFrame()
 
-        # 4. Stream flight records to database row-by-row to handle unique constraints
-        print("Uploading flight data to database...")
-        flights_loaded = 0
-        for _, row in flights_df.iterrows():
-            try:
-                pd.DataFrame([row]).to_sql(name='flights', con=engine, if_exists='append', index=False)
-                flights_loaded += 1
-            except IntegrityError:
-                continue
-        print(f"Success: {flights_loaded} new flights loaded (duplicates ignored).")
+        # BATCH PROCESSING: Upload flights in bulk (1000 rows at once)
+        if not flights_df.empty:
+            print(f"Uploading {len(flights_df)} flights to cloud database in bulk...")
+            flights_df.to_sql(name='flights', con=engine, if_exists='append', index=False, method='multi', chunksize=1000)
+            print("Success: Flights loaded.")
 
-        # 5. Stream weather records to database row-by-row
-        print("Uploading weather data to database...")
-        weather_loaded = 0
-        for _, row in weather_df.iterrows():
-            try:
-                pd.DataFrame([row]).to_sql(name='weather', con=engine, if_exists='append', index=False)
-                weather_loaded += 1
-            except IntegrityError:
-                continue
-        print(f"Success: {weather_loaded} new weather records loaded (duplicates ignored).")
+        # BATCH PROCESSING: Upload weather in bulk
+        if not weather_df.empty:
+            print(f"Uploading {len(weather_df)} weather records to cloud database in bulk...")
+            weather_df.to_sql(name='weather', con=engine, if_exists='append', index=False, method='multi', chunksize=1000)
+            print("Success: Weather records loaded.")
 
-        print("\nETL PIPELINE EXECUTED SUCCESSFULLY WITH IDEMPOTENCY!")
+        print("\nETL PIPELINE EXECUTED SUCCESSFULLY!")
 
     except Exception as e:
         # Log infrastructure or transaction level errors for debugging
