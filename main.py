@@ -1,4 +1,5 @@
-# ENVIRONMENT SETUP & CONFIGURATION
+# AVIATION & WEATHER ETL PIPELINE
+
 import requests
 import pandas as pd
 import json
@@ -8,282 +9,244 @@ import boto3
 from datetime import datetime, timedelta
 from meteostat import Point, Hourly
 from sqlalchemy import create_engine
-from sqlalchemy.exc import IntegrityError
 from dotenv import load_dotenv
+import logging
+from tenacity import retry, stop_after_attempt, wait_fixed
 
-# Load environmental configurations from the local secure .env file
+# 1. PROFESSIONAL LOGGER CONFIGURATION
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+# Load environment variables
 load_dotenv()
 
-# Initialize API credentials and project scopes
 AERO_API_KEY = os.getenv('AERO_API_KEY')
 AIRPORTS = ['EPWA', 'EGLL', 'EDDF']
+RAW_DIR = "data/raw"
 
-print("Libraries loaded. API credentials secured and ready.")
+logger.info("Libraries loaded. Environment variables secured and ready.")
 
-# CORE FUNCTIONS
+
+# 2. DATA LAKE: AWS S3 Upload Function
 def upload_raw_to_s3(data, file_prefix):
-    """Persists raw JSON payloads directly to AWS S3 (Data Lake pattern)."""
+    """Persists raw JSON payloads directly to AWS S3 (Data Lake layer)."""
     bucket_name = os.getenv("AWS_BUCKET_NAME")
-    
+
     if not bucket_name:
-        print("⚠️ WARNING: AWS_BUCKET_NAME not found in .env. Skipping S3 upload.")
+        logger.warning("AWS_BUCKET_NAME not found in .env. Skipping S3 upload.")
         return
 
-    # Initialize AWS S3 client
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.getenv('AWS_REGION')
-    )
-    
-    # Generate S3 partition path (YYYY-MM-DD) for optimized data lake querying
-    today_str = datetime.now().strftime('%Y-%m-%d')
-    file_name = f"raw_data/{today_str}/{file_prefix}.json"
-    
     try:
-        # Serialize Python dictionary to JSON string and upload to S3 Bucket
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+            region_name=os.getenv('AWS_REGION')
+        )
+
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        file_name = f"raw_data/{today_str}/{file_prefix}.json"
+
         s3_client.put_object(
             Bucket=bucket_name,
             Key=file_name,
             Body=json.dumps(data)
         )
-        print(f"☁️ SUCCESS: Raw data persisted to S3 Data Lake -> s3://{bucket_name}/{file_name}")
+        logger.info(f"SUCCESS (S3): Raw data saved to Data Lake -> s3://{bucket_name}/{file_name}")
     except Exception as e:
-        print(f"❌ AWS S3 UPLOAD FAILED for {file_prefix}. Reason: {e}")
+        logger.error(f"FAILED (S3): Error uploading file {file_prefix}. Reason: {e}")
 
 
-# PHASE: EXTRACT (Flight Data Ingestion)
-print("\nStarting AeroDataBox data extraction...\n")
+# 3. ROBUST API FETCH FUNCTIONS (RESILIENCE)
+# @retry decorator ensures that in case of a network error, the script
+# waits 10 seconds and retries. Max 3 attempts.
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(10))
+def fetch_flight_data_from_api(airport, time_from, time_to, headers):
+    """Fetches data from AeroDataBox with built-in retry mechanism."""
+    url = f"https://aerodatabox.p.rapidapi.com/flights/airports/icao/{airport}/{time_from}/{time_to}"
+    querystring = {"withLeg": "true", "direction": "Arrival", "withCancelled": "false", "withCodeshared": "true",
+                   "withCargo": "false", "withPrivate": "false", "withLocation": "false"}
 
-# Establish landing zone directory for immutable raw data storage locally
-RAW_DIR = "data/raw"
-os.makedirs(RAW_DIR, exist_ok=True)
+    response = requests.get(url, headers=headers, params=querystring)
 
-# Generate current timestamps for dynamic FIDS tracking windows
-today_str = datetime.now().strftime('%Y-%m-%d')
-time_from = f"{today_str}T00:00"
-time_to = f"{today_str}T11:59"
+    # CRITICAL: This method forces an exception if the status is e.g., 500 or 429.
+    # This ensures the 'tenacity' library knows it must retry!
+    response.raise_for_status()
 
-headers = {
-    "X-RapidAPI-Key": AERO_API_KEY,
-    "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com"
-}
-
-for airport in AIRPORTS:
-    # Build unique, date-stamped file path for daily caching optimization
-    local_file = os.path.join(RAW_DIR, f"aero_{airport}_{today_str}.json")
-    file_prefix = f"aero_{airport}"
-
-    if os.path.exists(local_file):
-        print(f"Cache found: {local_file}. Skipping API call.")
-    else:
-        print(f"--- Fetching FIDS data for {airport} ---")
-
-        url = f"https://aerodatabox.p.rapidapi.com/flights/airports/icao/{airport}/{time_from}/{time_to}"
-        querystring = {"withLeg": "true", "direction": "Arrival", "withCancelled": "false", "withCodeshared": "true",
-                       "withCargo": "false", "withPrivate": "false", "withLocation": "false"}
-
-        response = requests.get(url, headers=headers, params=querystring)
-
-        if response.status_code == 200:
-            json_data = response.json()
-            
-            # 1. Save locally (Caching)
-            with open(local_file, 'w', encoding='utf-8') as file:
-                json.dump(json_data, file, ensure_ascii=False, indent=4)
-            print(f"Success! Data saved locally to {local_file}")
-            
-            # 2. Save to AWS S3 (Data Lake)
-            upload_raw_to_s3(json_data, file_prefix)
-
-            # RATE LIMIT PROTECTION: Sleep execution to respect BASIC tier 1 rps quota
-            print("Sleeping for 2 seconds to respect API rate limits...")
-            time.sleep(2)
-        else:
-            print(f"Error fetching {airport}: {response.status_code} - {response.text}")
-
-print("\nExtract Phase (AeroDataBox) completed!")
+    return response.json()
 
 
-# PHASE: TRANSFORM (Flight Data Normalization)
-print("\nStarting AeroDataBox data transformation in Pandas...\n")
-dataframes_list = []
-
-# Parse daily raw JSON files from the local Landing Zone
-for airport in AIRPORTS:
-    local_file = os.path.join(RAW_DIR, f"aero_{airport}_{today_str}.json")
-    try:
-        with open(local_file, 'r', encoding='utf-8') as file:
-            json_data = json.load(file)
-
-        flights_list = json_data.get('arrivals', [])
-
-        if not flights_list:
-            print(f"No arrivals found for {airport} in the JSON file.")
-            continue
-
-        # Flatten nested JSON hierarchy into tabular format
-        temp_df = pd.json_normalize(flights_list)
-        temp_df['arrival_airport'] = airport
-        dataframes_list.append(temp_df)
-    except FileNotFoundError:
-        print(f"File {local_file} not found. Run extraction first!")
-
-if dataframes_list:
-    raw_flights_df = pd.concat(dataframes_list, ignore_index=True)
-
-    # EXACT schema mapping based on live production API payloads
-    column_mapping = {
-        'number': 'flight_number',
-        'status': 'flight_status',
-        'airline.name': 'airline',
-        'departure.airport.iata': 'departure_airport',
-        'arrival_airport': 'arrival_airport',
-        'arrival.scheduledTime.utc': 'scheduled_arrival',
-        'arrival.revisedTime.utc': 'actual_arrival'
-    }
-
-    existing_columns = [col for col in column_mapping.keys() if col in raw_flights_df.columns]
-    clean_flights_df = raw_flights_df[existing_columns].rename(columns=column_mapping)
-
-    # Filter out active/scheduled air traffic to keep completed flights only
-    if 'flight_status' in clean_flights_df.columns:
-        landed_flights = clean_flights_df[clean_flights_df['flight_status'] == 'Arrived'].copy()
-    else:
-        landed_flights = clean_flights_df.copy()
-
-    # Standardize temporal features into pandas UTC datetime objects
-    if 'scheduled_arrival' in landed_flights.columns:
-        landed_flights['scheduled_arrival'] = pd.to_datetime(landed_flights['scheduled_arrival'], utc=True)
-
-    if 'actual_arrival' in landed_flights.columns:
-        landed_flights['actual_arrival'] = pd.to_datetime(landed_flights['actual_arrival'], utc=True)
-        landed_flights.dropna(subset=['actual_arrival', 'scheduled_arrival'], inplace=True)
-
-    # FEATURE ENGINEERING: Compute precise flight delay duration in minutes
-    if 'scheduled_arrival' in landed_flights.columns and 'actual_arrival' in landed_flights.columns:
-        landed_flights['delay_minutes'] = (landed_flights['actual_arrival'] - landed_flights[
-            'scheduled_arrival']).dt.total_seconds() / 60
-        # Rectify negative values (early arrivals) to 0 minutes
-        landed_flights['delay_minutes'] = landed_flights['delay_minutes'].apply(lambda x: x if x > 0 else 0).astype(int)
-    else:
-        landed_flights['delay_minutes'] = 0
-
-    print(f"Transformation complete! {len(landed_flights)} landed flights processed.")
-
-    # Persist structured staging dataset to local directory
-    landed_flights.to_csv('clean_flights.csv', index=False)
-    print("clean_flights.csv successfully updated with real timestamps.")
-else:
-    print("No dataframes were created.")
-
-
-# PHASE: WEATHER EXTRACT (Historical Data)
-print("\nStarting historical weather data extraction...\n")
-
-# Map geographical coordinates for precise weather spatial index queries
-airport_locations = {
-    'EPWA': Point(52.1657, 20.9671, 110),  # Warsaw Chopin
-    'EGLL': Point(51.4700, -0.4543, 25),   # London Heathrow
-    'EDDF': Point(50.0333, 8.5705, 111)    # Frankfurt
-}
-
-# Define data extraction time bounds (24-hour lookback window)
-end_time = datetime.now()
-start_time = end_time - timedelta(days=1)
-
-weather_frames = []
-
-for airport_code, location in airport_locations.items():
-    print(f"Fetching hourly weather data for {airport_code}...")
-
-    # Query Meteostat physical stations
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(10))
+def fetch_weather_data_from_api(location, start_time, end_time):
+    """Fetches historical data from Meteostat with built-in retry mechanism."""
     data = Hourly(location, start_time, end_time)
-    data = data.fetch()
+    return data.fetch()
 
-    if not data.empty:
-        # Re-index dataframe to convert timestamp into an operational column
-        df_airport = data.reset_index()
-        # Append partition key for relational integrity downstream
-        df_airport['airport_code'] = airport_code
-        weather_frames.append(df_airport)
+
+# 4. MAIN ETL PROCESSING PHASES
+def run_extract_flights_phase():
+    logger.info("STARTING PHASE: EXTRACT (Flights)")
+    os.makedirs(RAW_DIR, exist_ok=True)
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    time_from, time_to = f"{today_str}T00:00", f"{today_str}T11:59"
+    headers = {"X-RapidAPI-Key": AERO_API_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com"}
+
+    for airport in AIRPORTS:
+        local_file = os.path.join(RAW_DIR, f"aero_{airport}_{today_str}.json")
+        file_prefix = f"aero_{airport}"
+
+        if os.path.exists(local_file):
+            logger.info(f"Cache found: {local_file}. Skipping API call.")
+        else:
+            logger.info(f"Fetching data for airport: {airport}...")
+            try:
+                # Using our robust function with @retry
+                json_data = fetch_flight_data_from_api(airport, time_from, time_to, headers)
+
+                # Local save
+                with open(local_file, 'w', encoding='utf-8') as file:
+                    json.dump(json_data, file, ensure_ascii=False, indent=4)
+
+                # Save to AWS S3
+                upload_raw_to_s3(json_data, file_prefix)
+
+                # Rate limit protection
+                time.sleep(2)
+            except Exception as e:
+                logger.error(f"Critical error fetching data for {airport} after 3 attempts: {e}")
+
+
+def run_transform_flights_phase():
+    logger.info("STARTING PHASE: TRANSFORM (Flights in Pandas)")
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    dataframes_list = []
+
+    for airport in AIRPORTS:
+        local_file = os.path.join(RAW_DIR, f"aero_{airport}_{today_str}.json")
+        try:
+            with open(local_file, 'r', encoding='utf-8') as file:
+                json_data = json.load(file)
+            flights_list = json_data.get('arrivals', [])
+            if not flights_list:
+                continue
+            temp_df = pd.json_normalize(flights_list)
+            temp_df['arrival_airport'] = airport
+            dataframes_list.append(temp_df)
+        except FileNotFoundError:
+            logger.warning(f"Missing file {local_file}. Run EXTRACT phase first!")
+
+    if dataframes_list:
+        raw_flights_df = pd.concat(dataframes_list, ignore_index=True)
+        column_mapping = {
+            'number': 'flight_number', 'status': 'flight_status', 'airline.name': 'airline',
+            'departure.airport.iata': 'departure_airport', 'arrival_airport': 'arrival_airport',
+            'arrival.scheduledTime.utc': 'scheduled_arrival', 'arrival.revisedTime.utc': 'actual_arrival'
+        }
+        existing_columns = [col for col in column_mapping.keys() if col in raw_flights_df.columns]
+        clean_flights_df = raw_flights_df[existing_columns].rename(columns=column_mapping)
+
+        if 'flight_status' in clean_flights_df.columns:
+            landed_flights = clean_flights_df[clean_flights_df['flight_status'] == 'Arrived'].copy()
+        else:
+            landed_flights = clean_flights_df.copy()
+
+        if 'scheduled_arrival' in landed_flights.columns:
+            landed_flights['scheduled_arrival'] = pd.to_datetime(landed_flights['scheduled_arrival'], utc=True)
+        if 'actual_arrival' in landed_flights.columns:
+            landed_flights['actual_arrival'] = pd.to_datetime(landed_flights['actual_arrival'], utc=True)
+            landed_flights.dropna(subset=['actual_arrival', 'scheduled_arrival'], inplace=True)
+
+        if 'scheduled_arrival' in landed_flights.columns and 'actual_arrival' in landed_flights.columns:
+            landed_flights['delay_minutes'] = (landed_flights['actual_arrival'] - landed_flights[
+                'scheduled_arrival']).dt.total_seconds() / 60
+            landed_flights['delay_minutes'] = landed_flights['delay_minutes'].apply(lambda x: x if x > 0 else 0).astype(
+                int)
+        else:
+            landed_flights['delay_minutes'] = 0
+
+        landed_flights.to_csv('clean_flights.csv', index=False)
+        logger.info(f"Transformation successful! Saved {len(landed_flights)} rows to clean_flights.csv.")
     else:
-        print(f"WARNING: No weather data found for {airport_code} in the given timeframe.")
-
-if weather_frames:
-    # Concatenate regional data arrays into a unified weather dataframe
-    weather_df = pd.concat(weather_frames, ignore_index=True)
-
-    # Prune target features for target Data Warehouse schema
-    columns_to_keep = ['airport_code', 'time', 'temp', 'prcp', 'wspd', 'coco']
-    weather_df = weather_df[columns_to_keep]
-
-    # Normalize business definitions to match target PostgreSQL database fields
-    weather_df.rename(columns={
-        'time': 'weather_timestamp',
-        'temp': 'temperature_c',
-        'prcp': 'precipitation_mm',
-        'wspd': 'wind_speed_kmh',
-        'coco': 'condition_code'
-    }, inplace=True)
-
-    # Impute missing values for precipitation metrics (NaN -> 0.0 mm)
-    weather_df['precipitation_mm'] = weather_df['precipitation_mm'].fillna(0)
-
-    print(f"Weather dataframe created! Total rows: {len(weather_df)}")
-    print(weather_df[['airport_code', 'weather_timestamp', 'temperature_c', 'wind_speed_kmh']].head().to_string())
-
-    print("\nSaving cleaned datasets to CSV format...")
-    # Cache transformed entities to final staging tables
-    if 'landed_flights' in locals():
-        landed_flights.to_csv('clean_flights.csv', index=False, encoding='utf-8')
-    weather_df.to_csv('clean_weather.csv', index=False, encoding='utf-8')
-
-    print("Extraction Complete! CSV files are updated and ready for SQL.")
-else:
-    print("Failed to create weather dataframe.")
+        logger.warning("No flight data to process.")
 
 
-# PHASE: LOAD (Data Warehouse Ingestion)
-print("\nStarting Load Phase: Ingesting data into PostgreSQL...\n")
+def run_weather_phase():
+    logger.info("STARTING PHASE: EXTRACT & TRANSFORM (Weather)")
+    airport_locations = {
+        'EPWA': Point(52.1657, 20.9671, 110),
+        'EGLL': Point(51.4700, -0.4543, 25),
+        'EDDF': Point(50.0333, 8.5705, 111)
+    }
+    end_time = datetime.now()
+    start_time = end_time - timedelta(days=1)
+    weather_frames = []
 
-# Acquire target database URL credentials securely
-db_url = os.getenv('DATABASE_URL')
+    for airport_code, location in airport_locations.items():
+        logger.info(f"Fetching historical weather for airport: {airport_code}...")
+        try:
+            # Using our robust function with @retry
+            data = fetch_weather_data_from_api(location, start_time, end_time)
+            if not data.empty:
+                df_airport = data.reset_index()
+                df_airport['airport_code'] = airport_code
+                weather_frames.append(df_airport)
+        except Exception as e:
+            logger.error(f"Critical error fetching weather for {airport_code}: {e}")
 
-if not db_url:
-    print("ERROR: DATABASE_URL missing in .env file!")
-else:
+    if weather_frames:
+        weather_df = pd.concat(weather_frames, ignore_index=True)
+        columns_to_keep = ['airport_code', 'time', 'temp', 'prcp', 'wspd', 'coco']
+        weather_df = weather_df[columns_to_keep]
+        weather_df.rename(columns={
+            'time': 'weather_timestamp', 'temp': 'temperature_c', 'prcp': 'precipitation_mm',
+            'wspd': 'wind_speed_kmh', 'coco': 'condition_code'
+        }, inplace=True)
+        weather_df['precipitation_mm'] = weather_df['precipitation_mm'].fillna(0)
+
+        weather_df.to_csv('clean_weather.csv', index=False, encoding='utf-8')
+        logger.info(f"Weather processed! Saved {len(weather_df)} rows to clean_weather.csv.")
+    else:
+        logger.warning("No weather data generated.")
+
+
+def run_load_phase():
+    logger.info("STARTING PHASE: LOAD (Data Warehouse AWS RDS)")
+    db_url = os.getenv('DATABASE_URL')
+
+    if not db_url:
+        logger.error("DATABASE_URL missing in .env! Aborting data load.")
+        return
+
     try:
-        # Establish high-performance relational database engine mapping
         engine = create_engine(db_url)
 
-        # Read processed datasets from the Staging Layer
-        print("Reading cleaned CSV datasets...")
         if os.path.exists('clean_flights.csv'):
             flights_df = pd.read_csv('clean_flights.csv')
-        else:
-            flights_df = pd.DataFrame()
-            
+            if not flights_df.empty:
+                flights_df.to_sql(name='flights', con=engine, if_exists='append', index=False, method='multi',
+                                  chunksize=1000)
+                logger.info(f"Success: {len(flights_df)} flights loaded to AWS RDS.")
+
         if os.path.exists('clean_weather.csv'):
             weather_df = pd.read_csv('clean_weather.csv')
-        else:
-            weather_df = pd.DataFrame()
+            if not weather_df.empty:
+                weather_df.to_sql(name='weather', con=engine, if_exists='append', index=False, method='multi',
+                                  chunksize=1000)
+                logger.info(f"Success: {len(weather_df)} weather records loaded to AWS RDS.")
 
-        # BATCH PROCESSING: Upload flights in bulk (1000 rows at once)
-        if not flights_df.empty:
-            print(f"Uploading {len(flights_df)} flights to cloud database in bulk...")
-            flights_df.to_sql(name='flights', con=engine, if_exists='append', index=False, method='multi', chunksize=1000)
-            print("Success: Flights loaded.")
-
-        # BATCH PROCESSING: Upload weather in bulk
-        if not weather_df.empty:
-            print(f"Uploading {len(weather_df)} weather records to cloud database in bulk...")
-            weather_df.to_sql(name='weather', con=engine, if_exists='append', index=False, method='multi', chunksize=1000)
-            print("Success: Weather records loaded.")
-
-        print("\nETL PIPELINE EXECUTED SUCCESSFULLY!")
-
+        logger.info("ETL PIPELINE EXECUTED SUCCESSFULLY!")
     except Exception as e:
-        # Log infrastructure or transaction level errors for debugging
-        print(f"\nCRITICAL ERROR during database load: {e}")
+        logger.error(f"CRITICAL ERROR during database load: {e}")
+
+
+# 5. ORCHESTRATION (Script Execution)
+if __name__ == "__main__":
+    logger.info("Starting full ETL process...")
+    run_extract_flights_phase()
+    run_transform_flights_phase()
+    run_weather_phase()
+    run_load_phase()
