@@ -11,13 +11,14 @@ x-airflow-common:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD}@postgres_db:5432/postgres
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__WEBSERVER__SECRET_KEY: 'super_tajne_haslo_inżyniera_123'
   depends_on:
     postgres_db:
       condition: service_healthy
   volumes:
     - ./dags:/opt/airflow/dags
     - ./main.py:/opt/airflow/main.py
-    - ./aviation_analytics:/opt/airflow/aviation_analytic  # <--- NASZE OKIENKO NA DBT
+    - ./aviation_analytics:/opt/airflow/aviation_analytics
 
 services:
   # DATABASE SERVICE
