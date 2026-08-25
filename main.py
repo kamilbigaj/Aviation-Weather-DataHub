@@ -8,7 +8,7 @@ import time
 import boto3
 from datetime import datetime, timedelta
 from meteostat import Point, Hourly
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 import logging
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -34,10 +34,10 @@ logger.info("Libraries loaded. Environment variables secured and ready.")
 # 2. DATA LAKE: AWS S3 Upload Function
 def upload_raw_to_s3(data, file_prefix):
     """Persists raw JSON payloads directly to AWS S3 (Data Lake layer)."""
-    bucket_name = os.getenv("AWS_BUCKET_NAME")
+    bucket_name = os.getenv("S3_BUCKET_NAME")
 
     if not bucket_name:
-        logger.warning("AWS_BUCKET_NAME not found in .env. Skipping S3 upload.")
+        logger.warning("S3_BUCKET_NAME not found in .env. Skipping S3 upload.")
         return
 
     try:
@@ -224,19 +224,73 @@ def run_load_phase():
     try:
         engine = create_engine(db_url)
 
+        # IDEMPOTENT DATA LOADING: FLIGHTS
         if os.path.exists('clean_flights.csv'):
             flights_df = pd.read_csv('clean_flights.csv')
             if not flights_df.empty:
-                flights_df.to_sql(name='flights', con=engine, if_exists='append', index=False, method='multi',
-                                  chunksize=1000)
-                logger.info(f"Success: {len(flights_df)} flights loaded to AWS RDS.")
+                # 1. Create target table with UNIQUE CONSTRAINT if it doesn't exist
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS flights (
+                            flight_number VARCHAR,
+                            flight_status VARCHAR,
+                            airline VARCHAR,
+                            departure_airport VARCHAR,
+                            arrival_airport VARCHAR,
+                            scheduled_arrival TIMESTAMP WITH TIME ZONE,
+                            actual_arrival TIMESTAMP WITH TIME ZONE,
+                            delay_minutes FLOAT,
+                            UNIQUE (flight_number, scheduled_arrival)
+                        );
+                    """))
 
+                # 2. Load data into a temporary staging table
+                flights_df.to_sql('stg_flights', engine, if_exists='replace', index=False)
+
+                # 3. Perform a safe UPSERT (Insert ON CONFLICT DO NOTHING)
+                with engine.begin() as conn:
+                    columns = ", ".join(flights_df.columns)
+                    conn.execute(text(f"""
+                        INSERT INTO flights ({columns})
+                        SELECT {columns} FROM stg_flights
+                        ON CONFLICT (flight_number, scheduled_arrival) DO NOTHING;
+                    """))
+                    # Clean up staging table
+                    conn.execute(text("DROP TABLE stg_flights;"))
+                    logger.info(f"Success: {len(flights_df)} flights processed idempotently.")
+
+        # IDEMPOTENT DATA LOADING: WEATHER
         if os.path.exists('clean_weather.csv'):
             weather_df = pd.read_csv('clean_weather.csv')
             if not weather_df.empty:
-                weather_df.to_sql(name='weather', con=engine, if_exists='append', index=False, method='multi',
-                                  chunksize=1000)
-                logger.info(f"Success: {len(weather_df)} weather records loaded to AWS RDS.")
+                # 1. Create target table with UNIQUE CONSTRAINT
+                with engine.begin() as conn:
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS weather (
+                            airport_code VARCHAR,
+                            weather_timestamp TIMESTAMP WITH TIME ZONE,
+                            temperature_c FLOAT,
+                            precipitation_mm FLOAT,
+                            wind_speed_kmh FLOAT,
+                            condition_code FLOAT,
+                            UNIQUE (airport_code, weather_timestamp)
+                        );
+                    """))
+
+                # 2. Load data into a temporary staging table
+                weather_df.to_sql('stg_weather', engine, if_exists='replace', index=False)
+
+                # 3. Perform UPSERT
+                with engine.begin() as conn:
+                    columns = ", ".join(weather_df.columns)
+                    conn.execute(text(f"""
+                        INSERT INTO weather ({columns})
+                        SELECT {columns} FROM stg_weather
+                        ON CONFLICT (airport_code, weather_timestamp) DO NOTHING;
+                    """))
+                    # Clean up staging table
+                    conn.execute(text("DROP TABLE stg_weather;"))
+                    logger.info(f"Success: {len(weather_df)} weather records processed idempotently.")
 
         logger.info("ETL PIPELINE EXECUTED SUCCESSFULLY!")
     except Exception as e:

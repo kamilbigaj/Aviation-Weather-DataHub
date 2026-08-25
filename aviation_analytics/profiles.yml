@@ -3,10 +3,10 @@ aviation_analytics:
   outputs:
     dev:
       type: postgres
-      host: aviation-db.cdo8mm6occ7f.eu-central-1.rds.amazonaws.com
-      user: postgres
-      password: "{{ env_var('DB_PASSWORD') }}"
-      port: 5432
+      host: "{{ env_var('RDS_HOST') }}"
+      user: "{{ env_var('RDS_USER') }}"
+      password: "{{ env_var('RDS_PASSWORD') }}"
+      port: "{{ env_var('RDS_PORT') | int }}"
       dbname: postgres
       schema: public
-      threads: 1
+      threads: 4
