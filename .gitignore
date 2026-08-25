@@ -1,17 +1,24 @@
-# Ukryte hasła i klucze
+# Sensitive credentials and API keys
 .env
 
-# Środowiska wirtualne i cache Pythona
+# Python virtual environments and cache files
 venv/
 __pycache__/
 *.pyc
 
-# Pobierane surowe dane (nie chcemy ich pchać na GitHuba)
+# Raw downloaded data (excluded from version control)
 *.json
 *.csv
 
-# Ustawienia edytora (JetBrains/PyCharm)
+# IDE and editor settings (JetBrains, PyCharm, VS Code)
 .idea/
+.vscode/
 
-# Logi systemowe
+# Application and system logs
 logs/
+
+# macOS system files (to avoid committing system-generated files)
+.DS_Store
+
+# Metabase local configuration and dashboards (excluded from version control)
+metabase-data/

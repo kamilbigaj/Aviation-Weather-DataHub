@@ -6,42 +6,9 @@
 
 ## Architecture
 
-The pipeline follows a modern data engineering architecture combining **Python, AWS, PostgreSQL, dbt, Apache Airflow, and Docker**.
+![Data Engineering Architecture](docs/architecture.png)
 
-```text
-                         ┌──────────────────────┐
-                         │     Apache Airflow   │
-                         │      @daily DAG      │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │       Python         │
-                         │  Extract & Transform │
-                         └──────────┬───────────┘
-                                    │
-                  ┌─────────────────┴─────────────────┐
-                  │                                   │
-                  ▼                                   ▼
-        ┌──────────────────┐               ┌──────────────────┐
-        │     AWS S3       │               │     AWS RDS      │
-        │   Raw JSON Data  │               │    PostgreSQL    │
-        │  Data Lake Layer │               │ Processed Data   │
-        └──────────────────┘               └────────┬─────────┘
-                                                     │
-                                                     ▼
-                                            ┌──────────────────┐
-                                            │       dbt        │
-                                            │ SQL Transformations│
-                                            └────────┬─────────┘
-                                                     │
-                                                     ▼
-                                            ┌──────────────────┐
-                                            │ flights_weather  │
-                                            │ Analytical Data  │
-                                            │       Mart       │
-                                            └──────────────────┘
-```
+The pipeline follows a modern data engineering architecture combining Python, AWS, PostgreSQL, dbt, Apache Airflow, Docker, and Metabase.
 
 ---
 
@@ -80,6 +47,7 @@ The pipeline follows a modern data engineering architecture combining **Python, 
 | Orchestration        | Apache Airflow         |
 | Containerization     | Docker, Docker Compose |
 | Configuration        | Environment Variables  |
+| Business Intelligence | Metabase |
 
 ---
 
@@ -568,6 +536,17 @@ The final model can serve as a foundation for downstream BI tools such as **Powe
 
 ---
 
+## Business Intelligence & Visualization
+
+To make the analytical data mart actionable, the project integrates **Metabase** for interactive data visualization and reporting. 
+
+![Metabase Dashboard](docs/dashboard.png)
+
+The dashboard provides immediate business value by tracking:
+* **Key Performance Indicators (KPIs):** Total flight volume and overall average delays.
+* **Aviation Bottlenecks:** Identifying the worst-performing airlines and airports.
+* **Time-Series Analysis:** Daily trends in flight delays, exposing operational gaps and weather impacts over time.
+
 ## Future Improvements
 
 Potential future improvements include:
@@ -581,7 +560,6 @@ Potential future improvements include:
 * Improved Airflow monitoring and alerting
 * Cloud-based Airflow deployment
 * Migration from PostgreSQL/RDS to a dedicated cloud data warehouse such as Amazon Redshift
-* BI dashboard for flight delay and weather analysis
 * Additional airports and weather metrics
 
 ---
