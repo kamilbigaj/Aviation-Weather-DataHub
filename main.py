@@ -89,10 +89,16 @@ def fetch_weather_data_from_api(location, start_time, end_time):
 
 # 4. MAIN ETL PROCESSING PHASES
 def run_extract_flights_phase():
-    logger.info("STARTING PHASE: EXTRACT (Flights)")
+    logger.info("STARTING PHASE: EXTRACT (Flights - Full 24h Day)")
     os.makedirs(RAW_DIR, exist_ok=True)
     today_str = datetime.now().strftime('%Y-%m-%d')
-    time_from, time_to = f"{today_str}T00:00", f"{today_str}T11:59"
+    
+    # API restriction: max 12h per request. We divide the day into two windows.
+    time_windows = [
+        (f"{today_str}T00:00", f"{today_str}T11:59"),
+        (f"{today_str}T12:00", f"{today_str}T23:59")
+    ]
+    
     headers = {"X-RapidAPI-Key": AERO_API_KEY, "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com"}
 
     for airport in AIRPORTS:
@@ -101,23 +107,35 @@ def run_extract_flights_phase():
 
         if os.path.exists(local_file):
             logger.info(f"Cache found: {local_file}. Skipping API call.")
-        else:
-            logger.info(f"Fetching data for airport: {airport}...")
-            try:
-                # Using our robust function with @retry
+            continue
+            
+        logger.info(f"Fetching full 24h data for airport: {airport}...")
+        all_arrivals = []
+        
+        try:
+            # Fetch both 12h windows and combine results
+            for time_from, time_to in time_windows:
+                logger.info(f"  -> Fetching window: {time_from} to {time_to}")
                 json_data = fetch_flight_data_from_api(airport, time_from, time_to, headers)
-
-                # Local save
-                with open(local_file, 'w', encoding='utf-8') as file:
-                    json.dump(json_data, file, ensure_ascii=False, indent=4)
-
-                # Save to AWS S3
-                upload_raw_to_s3(json_data, file_prefix)
-
-                # Rate limit protection
+                
+                if 'arrivals' in json_data:
+                    all_arrivals.extend(json_data['arrivals'])
+                    
+                # Rate limit protection between windows
                 time.sleep(2)
-            except Exception as e:
-                logger.error(f"Critical error fetching data for {airport} after 3 attempts: {e}")
+            
+            # Reconstruct the final JSON payload
+            final_json_data = {"arrivals": all_arrivals}
+
+            # Local save
+            with open(local_file, 'w', encoding='utf-8') as file:
+                json.dump(final_json_data, file, ensure_ascii=False, indent=4)
+
+            # Save to AWS S3
+            upload_raw_to_s3(final_json_data, file_prefix)
+
+        except Exception as e:
+            logger.error(f"Critical error fetching data for {airport} after attempts: {e}")
 
 
 def run_transform_flights_phase():
