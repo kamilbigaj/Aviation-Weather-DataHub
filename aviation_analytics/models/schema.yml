@@ -1,0 +1,26 @@
+version: 2
+
+sources:
+  - name: raw_data
+    schema: public
+    tables:
+      - name: flights
+      - name: weather
+
+models:
+  - name: stg_flights
+    description: "Staging model for flight arrivals."
+  - name: stg_weather
+    description: "Staging model for historical hourly weather."
+  - name: fact_flights_weather
+    description: "Fact table joining flight actual arrivals with the closest hourly weather observation."
+    columns:
+      - name: flight_number
+        tests:
+          - not_null
+      - name: arrival_airport
+        tests:
+          - not_null
+      - name: delay_minutes
+        tests:
+          - not_null
