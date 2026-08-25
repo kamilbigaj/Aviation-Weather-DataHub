@@ -1,5 +1,7 @@
 # Aviation & Weather ETL Pipeline ✈️
 
+![CI Pipeline](https://github.com/kamilbigaj/Aviation-Weather-DataHub/actions/workflows/ci.yml/badge.svg)
+
 An end-to-end Data Engineering pipeline that extracts daily flight arrival and historical weather data, stores raw data in AWS S3, loads processed data into PostgreSQL, and transforms it into an analytical data mart using dbt. The entire workflow is orchestrated with Apache Airflow and containerized with Docker.
 
 ## Architecture
