@@ -11,13 +11,14 @@ x-airflow-common:
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD}@postgres_db:5432/postgres
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    AIRFLOW__WEBSERVER__SECRET_KEY: 'super_tajne_haslo_inżyniera_123'
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
   depends_on:
     postgres_db:
       condition: service_healthy
   volumes:
     - ./dags:/opt/airflow/dags
     - ./main.py:/opt/airflow/main.py
+    - ./etl:/opt/airflow/etl
     - ./aviation_analytics:/opt/airflow/aviation_analytics
 
 services:
@@ -49,8 +50,8 @@ services:
       <<: *airflow-common-env
       _AIRFLOW_DB_UPGRADE: 'true'
       _AIRFLOW_WWW_USER_CREATE: 'true'
-      _AIRFLOW_WWW_USER_USERNAME: admin
-      _AIRFLOW_WWW_USER_PASSWORD: admin
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USERNAME}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
 
   # AIRFLOW: Web Server
   airflow-webserver:
