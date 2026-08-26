@@ -118,7 +118,6 @@ pytest tests/
 ## Future Improvements
 
 * dbt tests and data quality checks
-* CI/CD pipeline using GitHub Actions
 * AWS Secrets Manager integration for credential management
 * Cloud-based Airflow deployment
 * Migration to a dedicated cloud data warehouse (e.g. Amazon Redshift)
